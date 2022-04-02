@@ -34,7 +34,7 @@ public:
   virtual ~SimpleExecutorMemoryManager();
 
   Expected<ExecutorAddr> allocate(uint64_t Size);
-  Error finalize(tpctypes::FinalizeRequest &FR);
+  Error finalize(tpctypes::FinalizeRequest &FR, StringRef SharedMemoryName);
   Error deallocate(const std::vector<ExecutorAddr> &Bases);
 
   Error shutdown() override;

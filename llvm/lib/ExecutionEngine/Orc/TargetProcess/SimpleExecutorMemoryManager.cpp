@@ -9,7 +9,13 @@
 #include "llvm/ExecutionEngine/Orc/TargetProcess/SimpleExecutorMemoryManager.h"
 
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+
+#include <fcntl.h>
+#include <sstream>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #define DEBUG_TYPE "orc"
 
@@ -22,18 +28,19 @@ SimpleExecutorMemoryManager::~SimpleExecutorMemoryManager() {
 }
 
 Expected<ExecutorAddr> SimpleExecutorMemoryManager::allocate(uint64_t Size) {
-  std::error_code EC;
-  auto MB = sys::Memory::allocateMappedMemory(
-      Size, nullptr, sys::Memory::MF_READ | sys::Memory::MF_WRITE, EC);
-  if (EC)
-    return errorCodeToError(EC);
+  void *Addr = mmap(nullptr, Size, PROT_NONE,
+                    MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  assert(Addr != (void *)-1 && "initial mmap() failed");
+
+  auto MB = sys::MemoryBlock(Addr, Size);
   std::lock_guard<std::mutex> Lock(M);
   assert(!Allocations.count(MB.base()) && "Duplicate allocation addr");
   Allocations[MB.base()].Size = Size;
   return ExecutorAddr::fromPtr(MB.base());
 }
 
-Error SimpleExecutorMemoryManager::finalize(tpctypes::FinalizeRequest &FR) {
+Error SimpleExecutorMemoryManager::finalize(tpctypes::FinalizeRequest &FR,
+                                            StringRef SharedMemoryName) {
   ExecutorAddr Base(~0ULL);
   std::vector<shared::WrapperFunctionCall> DeallocationActions;
   size_t SuccessfulFinalizationActions = 0;
@@ -106,6 +113,8 @@ Error SimpleExecutorMemoryManager::finalize(tpctypes::FinalizeRequest &FR) {
     return Err;
   };
 
+  int SharedMemoryFile = shm_open(SharedMemoryName.str().c_str(), O_RDWR, 0700);
+
   // Copy content and apply permissions.
   for (auto &Seg : FR.Segments) {
 
@@ -126,16 +135,30 @@ Error SimpleExecutorMemoryManager::finalize(tpctypes::FinalizeRequest &FR) {
           inconvertibleErrorCode()));
 
     char *Mem = Seg.Addr.toPtr<char *>();
-    memcpy(Mem, Seg.Content.data(), Seg.Content.size());
-    memset(Mem + Seg.Content.size(), 0, Seg.Size - Seg.Content.size());
+
+    int MmapProt = 0;
+    if (Seg.Prot & tpctypes::WPF_Read)
+      MmapProt |= PROT_READ;
+    if (Seg.Prot & tpctypes::WPF_Write)
+      MmapProt |= PROT_WRITE;
+    if (Seg.Prot & tpctypes::WPF_Exec)
+      MmapProt |= PROT_EXEC;
+
+    // stringstream to prevent output being mangled when coming from multiple
+    // threads
+    std::stringstream Debugs;
+    Debugs << SharedMemoryName.str() << " Mapping " << Seg.Size << " bytes to "
+           << Seg.Addr.toPtr<void *>() << " as " << MmapProt << '\n';
+    dbgs() << Debugs.str();
+    void *Addr = mmap(Mem, Seg.Size, MmapProt, MAP_SHARED | MAP_FIXED,
+                      SharedMemoryFile, Seg.Addr - Base);
+    assert(Addr == Mem && "executor mmap() failed");
     assert(Seg.Size <= std::numeric_limits<size_t>::max());
-    if (auto EC = sys::Memory::protectMappedMemory(
-            {Mem, static_cast<size_t>(Seg.Size)},
-            tpctypes::fromWireProtectionFlags(Seg.Prot)))
-      return BailOut(errorCodeToError(EC));
     if (Seg.Prot & tpctypes::WPF_Exec)
       sys::Memory::InvalidateInstructionCache(Mem, Seg.Size);
   }
+
+  close(SharedMemoryFile);
 
   // Run finalization actions.
   for (auto &ActPair : FR.Actions) {
@@ -216,9 +239,7 @@ Error SimpleExecutorMemoryManager::deallocateImpl(void *Base, Allocation &A) {
     A.DeallocationActions.pop_back();
   }
 
-  sys::MemoryBlock MB(Base, A.Size);
-  if (auto EC = sys::Memory::releaseMappedMemory(MB))
-    Err = joinErrors(std::move(Err), errorCodeToError(EC));
+  munmap(Base, A.Size);
 
   return Err;
 }

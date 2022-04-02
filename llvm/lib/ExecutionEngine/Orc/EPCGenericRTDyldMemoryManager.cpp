@@ -275,7 +275,8 @@ bool EPCGenericRTDyldMemoryManager::finalizeMemory(std::string *ErrMsg) {
     Error FinalizeErr = Error::success();
     if (auto Err = EPC.callSPSWrapper<
                    rt::SPSSimpleExecutorMemoryManagerFinalizeSignature>(
-            SAs.Finalize, FinalizeErr, SAs.Instance, std::move(FR))) {
+            SAs.Finalize, FinalizeErr, SAs.Instance, std::move(FR),
+            StringRef(""))) {
       std::lock_guard<std::mutex> Lock(M);
       this->ErrMsg = toString(std::move(Err));
       dbgs() << "Serialization error: " << this->ErrMsg << "\n";

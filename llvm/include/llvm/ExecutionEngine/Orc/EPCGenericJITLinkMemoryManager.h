@@ -54,7 +54,8 @@ public:
 private:
   class InFlightAlloc;
 
-  void completeAllocation(ExecutorAddr AllocAddr, jitlink::BasicLayout BL,
+  void completeAllocation(ExecutorAddr AllocAddr, uint64_t Size,
+                          jitlink::BasicLayout BL,
                           OnAllocatedFunction OnAllocated);
 
   ExecutorProcessControl &EPC;

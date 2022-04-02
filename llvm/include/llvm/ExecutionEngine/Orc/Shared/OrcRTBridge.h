@@ -53,8 +53,8 @@ using SPSSimpleExecutorDylibManagerLookupSignature =
 using SPSSimpleExecutorMemoryManagerReserveSignature =
     shared::SPSExpected<shared::SPSExecutorAddr>(shared::SPSExecutorAddr,
                                                  uint64_t);
-using SPSSimpleExecutorMemoryManagerFinalizeSignature =
-    shared::SPSError(shared::SPSExecutorAddr, shared::SPSFinalizeRequest);
+using SPSSimpleExecutorMemoryManagerFinalizeSignature = shared::SPSError(
+    shared::SPSExecutorAddr, shared::SPSFinalizeRequest, shared::SPSString);
 using SPSSimpleExecutorMemoryManagerDeallocateSignature = shared::SPSError(
     shared::SPSExecutorAddr, shared::SPSSequence<shared::SPSExecutorAddr>);
 

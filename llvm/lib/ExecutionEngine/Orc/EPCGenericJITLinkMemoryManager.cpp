@@ -11,8 +11,13 @@
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/Orc/LookupAndRecordAddrs.h"
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
+#include "llvm/Support/Process.h"
 
+#include <fcntl.h>
 #include <limits>
+#include <sstream>
+#include <sys/mman.h>
+#include <unistd.h>
 
 using namespace llvm::jitlink;
 
@@ -39,8 +44,10 @@ public:
   using SegInfoMap = AllocGroupSmallMap<SegInfo>;
 
   InFlightAlloc(EPCGenericJITLinkMemoryManager &Parent, LinkGraph &G,
-                ExecutorAddr AllocAddr, SegInfoMap Segs)
-      : Parent(Parent), G(G), AllocAddr(AllocAddr), Segs(std::move(Segs)) {}
+                ExecutorAddr AllocAddr, SegInfoMap Segs,
+                std::string SharedMemoryName)
+      : Parent(Parent), G(G), AllocAddr(AllocAddr), Segs(std::move(Segs)),
+        SharedMemoryName(std::move(SharedMemoryName)) {}
 
   void finalize(OnFinalizedFunction OnFinalize) override {
     tpctypes::FinalizeRequest FR;
@@ -52,7 +59,7 @@ public:
           KV.second.Addr,
           alignTo(KV.second.ContentSize + KV.second.ZeroFillSize,
                   Parent.EPC.getPageSize()),
-          {KV.second.WorkingMem, static_cast<size_t>(KV.second.ContentSize)}});
+          {KV.second.WorkingMem, static_cast<size_t>(0)}});
     }
 
     // Transfer allocation actions.
@@ -72,7 +79,7 @@ public:
           else
             OnFinalize(FinalizedAlloc(AllocAddr));
         },
-        Parent.SAs.Allocator, std::move(FR));
+        Parent.SAs.Allocator, std::move(FR), StringRef(SharedMemoryName));
   }
 
   void abandon(OnAbandonedFunction OnAbandoned) override {
@@ -96,6 +103,7 @@ private:
   LinkGraph &G;
   ExecutorAddr AllocAddr;
   SegInfoMap Segs;
+  std::string SharedMemoryName;
 };
 
 void EPCGenericJITLinkMemoryManager::allocate(const JITLinkDylib *JD,
@@ -106,11 +114,13 @@ void EPCGenericJITLinkMemoryManager::allocate(const JITLinkDylib *JD,
   auto Pages = BL.getContiguousPageBasedLayoutSizes(EPC.getPageSize());
   if (!Pages)
     return OnAllocated(Pages.takeError());
+  auto TotalSize = Pages->total();
 
   EPC.callSPSWrapperAsync<rt::SPSSimpleExecutorMemoryManagerReserveSignature>(
       SAs.Reserve,
-      [this, BL = std::move(BL), OnAllocated = std::move(OnAllocated)](
-          Error SerializationErr, Expected<ExecutorAddr> AllocAddr) mutable {
+      [this, BL = std::move(BL), OnAllocated = std::move(OnAllocated),
+       TotalSize](Error SerializationErr,
+                  Expected<ExecutorAddr> AllocAddr) mutable {
         if (SerializationErr) {
           cantFail(AllocAddr.takeError());
           return OnAllocated(std::move(SerializationErr));
@@ -118,9 +128,10 @@ void EPCGenericJITLinkMemoryManager::allocate(const JITLinkDylib *JD,
         if (!AllocAddr)
           return OnAllocated(AllocAddr.takeError());
 
-        completeAllocation(*AllocAddr, std::move(BL), std::move(OnAllocated));
+        completeAllocation(*AllocAddr, TotalSize, std::move(BL),
+                           std::move(OnAllocated));
       },
-      SAs.Allocator, Pages->total());
+      SAs.Allocator, TotalSize);
 }
 
 void EPCGenericJITLinkMemoryManager::deallocate(
@@ -142,7 +153,20 @@ void EPCGenericJITLinkMemoryManager::deallocate(
 }
 
 void EPCGenericJITLinkMemoryManager::completeAllocation(
-    ExecutorAddr AllocAddr, BasicLayout BL, OnAllocatedFunction OnAllocated) {
+    ExecutorAddr AllocAddr, uint64_t Size, BasicLayout BL,
+    OnAllocatedFunction OnAllocated) {
+
+  static unsigned long AllocationCount = 0;
+  std::stringstream SharedMemoryNameStream;
+  SharedMemoryNameStream << "/jitlink_" << sys::Process::getProcessId() << '_'
+                         << (++AllocationCount);
+  auto SharedMemoryName = SharedMemoryNameStream.str();
+  int SharedMemoryFile =
+      shm_open(SharedMemoryName.c_str(), O_RDWR | O_CREAT | O_EXCL, 0700);
+  ftruncate(SharedMemoryFile, Size);
+  char *MappedAddr = (char *)mmap(nullptr, Size, PROT_READ | PROT_WRITE,
+                                  MAP_SHARED, SharedMemoryFile, 0);
+  assert(MappedAddr != (void *)-1 && "jit mmap() failed");
 
   InFlightAlloc::SegInfoMap SegInfos;
 
@@ -152,7 +176,7 @@ void EPCGenericJITLinkMemoryManager::completeAllocation(
     auto &Seg = KV.second;
 
     Seg.Addr = NextSegAddr;
-    KV.second.WorkingMem = BL.getGraph().allocateBuffer(Seg.ContentSize).data();
+    KV.second.WorkingMem = MappedAddr + (Seg.Addr - AllocAddr);
     NextSegAddr += ExecutorAddrDiff(
         alignTo(Seg.ContentSize + Seg.ZeroFillSize, EPC.getPageSize()));
 
@@ -167,7 +191,8 @@ void EPCGenericJITLinkMemoryManager::completeAllocation(
     return OnAllocated(std::move(Err));
 
   OnAllocated(std::make_unique<InFlightAlloc>(*this, BL.getGraph(), AllocAddr,
-                                              std::move(SegInfos)));
+                                              std::move(SegInfos),
+                                              std::move(SharedMemoryName)));
 }
 
 } // end namespace orc
