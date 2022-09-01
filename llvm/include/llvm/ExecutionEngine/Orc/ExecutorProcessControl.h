@@ -357,6 +357,8 @@ public:
         std::forward<WrapperCallArgTs>(WrapperCallArgs)...);
   }
 
+  TaskDispatcher& getTaskDispatcher() { return D.operator*(); }
+
   /// Disconnect from the target process.
   ///
   /// This should be called after the JIT session is shut down.

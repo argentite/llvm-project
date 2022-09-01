@@ -23,20 +23,22 @@ namespace orc {
 class MapperJITLinkMemoryManager : public jitlink::JITLinkMemoryManager {
 public:
   MapperJITLinkMemoryManager(size_t ReservationGranularity,
-                             std::unique_ptr<MemoryMapper> Mapper);
+                             std::unique_ptr<MemoryMapper> Mapper,
+                             TaskDispatcher &Dispatcher);
 
   template <class MemoryMapperType, class... Args>
   static Expected<std::unique_ptr<MapperJITLinkMemoryManager>>
-  CreateWithMapper(size_t ReservationGranularity, Args &&...A) {
+  CreateWithMapper(size_t ReservationGranularity, TaskDispatcher &Dispatcher,
+                   Args &&...A) {
     auto Mapper = MemoryMapperType::Create(std::forward<Args>(A)...);
     if (!Mapper)
       return Mapper.takeError();
 
-    return std::make_unique<MapperJITLinkMemoryManager>(ReservationGranularity,
-                                                        std::move(*Mapper));
+    return std::make_unique<MapperJITLinkMemoryManager>(
+        ReservationGranularity, std::move(*Mapper), Dispatcher);
   }
 
-  void allocate(const jitlink::JITLinkDylib *JD, jitlink::LinkGraph &G,
+  void allocate(const jitlink::JITLinkDylib *Range, jitlink::LinkGraph &G,
                 OnAllocatedFunction OnAllocated) override;
   // synchronous overload
   using JITLinkMemoryManager::allocate;
@@ -63,6 +65,7 @@ private:
   DenseMap<ExecutorAddr, ExecutorAddrDiff> UsedMemory;
 
   std::unique_ptr<MemoryMapper> Mapper;
+  TaskDispatcher& Dispatcher;
 };
 
 } // end namespace orc

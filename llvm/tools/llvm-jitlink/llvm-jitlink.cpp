@@ -801,22 +801,23 @@ Expected<uint64_t> getSlabAllocSize(StringRef SizeString) {
 }
 
 static std::unique_ptr<JITLinkMemoryManager> createInProcessMemoryManager() {
+  DynamicThreadPoolTaskDispatcher* D = nullptr;
   if (!SlabAllocateSizeString.empty()) {
     auto SlabSize = ExitOnErr(getSlabAllocSize(SlabAllocateSizeString));
 
     return ExitOnErr(
         MapperJITLinkMemoryManager::CreateWithMapper<InProcessDeltaMapper>(
-            SlabSize));
+            SlabSize, *D));
   }
 
 #ifdef _WIN32
   return ExitOnErr(
       MapperJITLinkMemoryManager::CreateWithMapper<InProcessMemoryMapper>(
-          1024 * 1024));
+          1024 * 1024, *D));
 #else
   return ExitOnErr(
       MapperJITLinkMemoryManager::CreateWithMapper<InProcessMemoryMapper>(
-          1024 * 1024 * 1024));
+          1024 * 1024 * 1024, *D));
 #endif
 }
 
@@ -845,7 +846,7 @@ createSharedMemoryManager(SimpleRemoteEPC &SREPC) {
     SlabSize = ExitOnErr(getSlabAllocSize(SlabAllocateSizeString));
 
   return MapperJITLinkMemoryManager::CreateWithMapper<SharedMemoryMapper>(
-      SlabSize, SREPC, SAs);
+      SlabSize, SREPC.getTaskDispatcher(), SREPC, SAs);
 }  size_t SlabSize = 1024 * 1024 * 1024;
 
 

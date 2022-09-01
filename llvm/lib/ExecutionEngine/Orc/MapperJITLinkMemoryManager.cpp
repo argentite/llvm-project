@@ -55,9 +55,10 @@ private:
 };
 
 MapperJITLinkMemoryManager::MapperJITLinkMemoryManager(
-    size_t ReservationGranularity, std::unique_ptr<MemoryMapper> Mapper)
+    size_t ReservationGranularity, std::unique_ptr<MemoryMapper> Mapper,
+    TaskDispatcher &Dispatcher)
     : ReservationUnits(ReservationGranularity), AvailableMemory(AMAllocator),
-      Mapper(std::move(Mapper)) {}
+      Mapper(std::move(Mapper)), Dispatcher(Dispatcher) {}
 
 void MapperJITLinkMemoryManager::allocate(const JITLinkDylib *JD, LinkGraph &G,
                                           OnAllocatedFunction OnAllocated) {
@@ -140,7 +141,11 @@ void MapperJITLinkMemoryManager::allocate(const JITLinkDylib *JD, LinkGraph &G,
     auto TotalAllocation = alignTo(TotalSize, ReservationUnits);
     Mapper->reserve(TotalAllocation, std::move(CompleteAllocation));
   } else {
-    CompleteAllocation(SelectedRange);
+    Dispatcher.dispatch(makeGenericNamedTask(
+        [CompleteAllocation = std::move(CompleteAllocation), SelectedRange]() mutable {
+          CompleteAllocation(SelectedRange);
+        },
+        "CompleteAllocation"));
   }
 }
 
