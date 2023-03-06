@@ -23,6 +23,9 @@
 #include "llvm/Support/TargetSelect.h" // llvm::Initialize*
 #include <optional>
 
+static llvm::cl::opt<bool> CudaEnabled("cuda", llvm::cl::Hidden);
+static llvm::cl::opt<std::string> OffloadArch("offload-arch", llvm::cl::Hidden);
+
 static llvm::cl::list<std::string>
     ClangArgs("Xcc",
               llvm::cl::desc("Argument to pass to the CompilerInvocation"),
@@ -90,9 +93,29 @@ int main(int argc, const char **argv) {
     return 0;
   }
 
+  std::unique_ptr<clang::CompilerInstance> DeviceCI;
+  if (CudaEnabled) {
+    // initialize NVPTX backend
+    LLVMInitializeNVPTXTargetInfo();
+    LLVMInitializeNVPTXTarget();
+    LLVMInitializeNVPTXTargetMC();
+    LLVMInitializeNVPTXAsmPrinter();
+
+    auto DeviceArgv = ClangArgv;
+
+    DeviceCI = ExitOnErr(
+        clang::IncrementalCudaCompilerBuilder::createDevice(DeviceArgv));
+  }
+
   // FIXME: Investigate if we could use runToolOnCodeWithArgs from tooling. It
   // can replace the boilerplate code for creation of the compiler instance.
-  auto CI = ExitOnErr(clang::IncrementalCompilerBuilder::create(ClangArgv));
+  std::unique_ptr<clang::CompilerInstance> CI;
+  if (CudaEnabled) {
+    CI = ExitOnErr(clang::IncrementalCudaCompilerBuilder::createHost(
+        ClangArgv, "/tmp/clang-repl.fatbin"));
+  } else {
+    CI = ExitOnErr(clang::IncrementalCompilerBuilder::createCpp(ClangArgv));
+  }
 
   // Set an error handler, so that any LLVM backend diagnostics go through our
   // error handler.
@@ -102,7 +125,19 @@ int main(int argc, const char **argv) {
   // Load any requested plugins.
   CI->LoadRequestedPlugins();
 
-  auto Interp = ExitOnErr(clang::Interpreter::create(std::move(CI)));
+  std::unique_ptr<clang::Interpreter> Interp;
+  if (CudaEnabled) {
+    if (OffloadArch.empty()) {
+      OffloadArch = "sm_35";
+    }
+    Interp = ExitOnErr(clang::Interpreter::createWithCUDA(
+        std::move(CI), std::move(DeviceCI), OffloadArch,
+        "/tmp/clang-repl.fatbin"));
+
+    ExitOnErr(Interp->LoadDynamicLibrary("libcudart.so"));
+  } else
+    Interp = ExitOnErr(clang::Interpreter::create(std::move(CI)));
+
   for (const std::string &input : OptInputs) {
     if (auto Err = Interp->ParseAndExecute(input))
       llvm::logAllUnhandledErrors(std::move(Err), llvm::errs(), "error: ");

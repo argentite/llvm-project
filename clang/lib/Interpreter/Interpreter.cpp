@@ -15,6 +15,7 @@
 
 #include "IncrementalExecutor.h"
 #include "IncrementalParser.h"
+#include "Offload.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/TargetInfo.h"
@@ -139,7 +140,6 @@ IncrementalCompilerBuilder::create(std::vector<const char *> &ClangArgv) {
   // action and use other actions in incremental mode.
   // FIXME: Print proper driver diagnostics if the driver flags are wrong.
   // We do C++ by default; append right after argv[0] if no "-x" given
-  ClangArgv.insert(ClangArgv.end(), "-xc++");
   ClangArgv.insert(ClangArgv.end(), "-Xclang");
   ClangArgv.insert(ClangArgv.end(), "-fincremental-extensions");
   ClangArgv.insert(ClangArgv.end(), "-c");
@@ -172,6 +172,39 @@ IncrementalCompilerBuilder::create(std::vector<const char *> &ClangArgv) {
   return CreateCI(**ErrOrCC1Args);
 }
 
+llvm::Expected<std::unique_ptr<CompilerInstance>>
+IncrementalCompilerBuilder::createCpp(std::vector<const char *> &ClangArgv) {
+  ClangArgv.insert(ClangArgv.begin(), "-xc++");
+
+  return IncrementalCompilerBuilder::create(ClangArgv);
+}
+
+llvm::Expected<std::unique_ptr<CompilerInstance>>
+IncrementalCudaCompilerBuilder::createDevice(
+    std::vector<const char *> &ClangArgv) {
+  ClangArgv.insert(ClangArgv.begin(), "-xcuda");
+  ClangArgv.insert(ClangArgv.begin(), "--cuda-device-only");
+
+  auto CI = IncrementalCompilerBuilder::create(ClangArgv);
+  assert(!CI.takeError());
+  return CI;
+}
+
+llvm::Expected<std::unique_ptr<CompilerInstance>>
+IncrementalCudaCompilerBuilder::createHost(std::vector<const char *> &ClangArgv,
+                                           llvm::StringRef FatbinFile) {
+  ClangArgv.insert(ClangArgv.begin(), "-xcuda");
+  ClangArgv.insert(ClangArgv.begin(), "--cuda-host-only");
+
+  auto CI = IncrementalCompilerBuilder::create(ClangArgv);
+  if (!CI)
+    return CI.takeError();
+
+  (*CI)->getCodeGenOpts().CudaGpuBinaryFileName = FatbinFile;
+
+  return CI;
+}
+
 Interpreter::Interpreter(std::unique_ptr<CompilerInstance> CI,
                          llvm::Error &Err) {
   llvm::ErrorAsOutParameter EAO(&Err);
@@ -200,6 +233,25 @@ Interpreter::create(std::unique_ptr<CompilerInstance> CI) {
   return std::move(Interp);
 }
 
+llvm::Expected<std::unique_ptr<Interpreter>> Interpreter::createWithCUDA(
+    std::unique_ptr<CompilerInstance> CI, std::unique_ptr<CompilerInstance> DCI,
+    llvm::StringRef CudaArch, llvm::StringRef TempDeviceCodeFilename) {
+  auto Interp = Interpreter::create(std::move(CI));
+  if (auto E = Interp.takeError())
+    return E;
+
+  llvm::Error Err = llvm::Error::success();
+  auto DeviceParser = std::make_unique<IncrementalCUDADeviceParser>(
+      std::move(DCI), *(*Interp)->TSCtx->getContext(), CudaArch,
+      TempDeviceCodeFilename, Err);
+  if (Err)
+    return std::move(Err);
+
+  (*Interp)->DeviceParser = std::move(DeviceParser);
+
+  return Interp;
+}
+
 const CompilerInstance *Interpreter::getCompilerInstance() const {
   return IncrParser->getCI();
 }
@@ -215,6 +267,11 @@ llvm::Expected<llvm::orc::LLJIT &> Interpreter::getExecutionEngine() {
 
 llvm::Expected<PartialTranslationUnit &>
 Interpreter::Parse(llvm::StringRef Code) {
+  if (DeviceParser) {
+    auto DevicePTU = DeviceParser->Parse(Code);
+    if (auto E = DevicePTU.takeError())
+      return E;
+  }
   return IncrParser->Parse(Code);
 }
 

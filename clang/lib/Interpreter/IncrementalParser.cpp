@@ -122,6 +122,10 @@ public:
   }
 };
 
+static CodeGenerator *getCodeGen(FrontendAction *Act);
+
+IncrementalParser::IncrementalParser() {}
+
 IncrementalParser::IncrementalParser(std::unique_ptr<CompilerInstance> Instance,
                                      llvm::LLVMContext &LLVMCtx,
                                      llvm::Error &Err)
@@ -135,6 +139,21 @@ IncrementalParser::IncrementalParser(std::unique_ptr<CompilerInstance> Instance,
   P.reset(
       new Parser(CI->getPreprocessor(), CI->getSema(), /*SkipBodies=*/false));
   P->Initialize();
+
+  // An initial PTU is needed as CUDA includes some headers automatically
+  auto PTU = ParseOrWrapTopLevelDecl();
+  if (auto E = PTU.takeError()) {
+    consumeError(std::move(E)); // FIXME
+    return;                     // PTU.takeError();
+  }
+
+  if (CodeGenerator *CG = getCodeGen(Act.get())) {
+    std::unique_ptr<llvm::Module> M(CG->ReleaseModule());
+    CG->StartModule("incr_module_" + std::to_string(PTUs.size()),
+                    M->getContext());
+    PTU->TheModule = std::move(M);
+    assert(PTU->TheModule && "Failed to create initial PTU");
+  }
 }
 
 IncrementalParser::~IncrementalParser() {

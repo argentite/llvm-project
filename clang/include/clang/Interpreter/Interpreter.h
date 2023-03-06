@@ -42,6 +42,16 @@ class IncrementalCompilerBuilder {
 public:
   static llvm::Expected<std::unique_ptr<CompilerInstance>>
   create(std::vector<const char *> &ClangArgv);
+  static llvm::Expected<std::unique_ptr<CompilerInstance>>
+  createCpp(std::vector<const char *> &ClangArgv);
+};
+
+class IncrementalCudaCompilerBuilder {
+public:
+  static llvm::Expected<std::unique_ptr<CompilerInstance>>
+  createHost(std::vector<const char *> &ClangArgv, llvm::StringRef FatbinFile);
+  static llvm::Expected<std::unique_ptr<CompilerInstance>>
+  createDevice(std::vector<const char *> &ClangArgv);
 };
 
 /// Provides top-level interfaces for incremental compilation and execution.
@@ -49,6 +59,9 @@ class Interpreter {
   std::unique_ptr<llvm::orc::ThreadSafeContext> TSCtx;
   std::unique_ptr<IncrementalParser> IncrParser;
   std::unique_ptr<IncrementalExecutor> IncrExecutor;
+
+  // An optional parser for CUDA offloading
+  std::unique_ptr<IncrementalParser> DeviceParser;
 
   Interpreter(std::unique_ptr<CompilerInstance> CI, llvm::Error &Err);
 
@@ -58,6 +71,11 @@ public:
   ~Interpreter();
   static llvm::Expected<std::unique_ptr<Interpreter>>
   create(std::unique_ptr<CompilerInstance> CI);
+  static llvm::Expected<std::unique_ptr<Interpreter>>
+  createWithCUDA(std::unique_ptr<CompilerInstance> CI,
+                 std::unique_ptr<CompilerInstance> DCI,
+                 llvm::StringRef OffloadArch,
+                 llvm::StringRef TempDeviceCodeFilename);
   const CompilerInstance *getCompilerInstance() const;
   llvm::Expected<llvm::orc::LLJIT &> getExecutionEngine();
 
