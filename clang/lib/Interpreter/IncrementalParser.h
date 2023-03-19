@@ -37,6 +37,7 @@ class Parser;
 /// changes between the subsequent incremental input.
 ///
 class IncrementalParser {
+protected:
   /// Long-lived, incremental parsing action.
   std::unique_ptr<IncrementalAction> Act;
 
@@ -56,17 +57,19 @@ class IncrementalParser {
   /// of code.
   std::list<PartialTranslationUnit> PTUs;
 
+  IncrementalParser();
+
 public:
   IncrementalParser(std::unique_ptr<CompilerInstance> Instance,
                     llvm::LLVMContext &LLVMCtx, llvm::Error &Err);
-  ~IncrementalParser();
+  virtual ~IncrementalParser();
 
   const CompilerInstance *getCI() const { return CI.get(); }
 
   /// Parses incremental input by creating an in-memory file.
   ///\returns a \c PartialTranslationUnit which holds information about the
   /// \c TranslationUnitDecl and \c llvm::Module corresponding to the input.
-  llvm::Expected<PartialTranslationUnit &> Parse(llvm::StringRef Input);
+  virtual llvm::Expected<PartialTranslationUnit &> Parse(llvm::StringRef Input);
 
   /// Uses the CodeGenModule mangled name cache and avoids recomputing.
   ///\returns the mangled name of a \c GD.
